@@ -9,7 +9,8 @@ from tqdm import tqdm
 
 
 class CLIPArgs:
-    model_name: str = "ViT-L/14@336px"
+    # model_name: str = "ViT-L/14@336px"
+    model_name: str = "ViT-L/14"
     skip_center_crop: bool = True
     batch_size: int = 64
 
@@ -28,6 +29,8 @@ def extract_clip_features(image_paths: List[str], device: torch.device) -> torch
     from f3rm.features.clip import clip
 
     model, preprocess = clip.load(CLIPArgs.model_name, device=device)
+    print(model)
+    # exit()
     print(f"Loaded CLIP model {CLIPArgs.model_name}")
 
     # Patch the preprocess if we want to skip center crop
@@ -73,6 +76,7 @@ def extract_clip_features(image_paths: List[str], device: torch.device) -> torch
         h_out, w_out = int(h_out), int(w_out)
     else:
         raise ValueError(f"Unknown CLIP model name: {CLIPArgs.model_name}")
+    print("Embeddings Shape before rearrange: ",embeddings.shape)
     embeddings = rearrange(embeddings, "b (h w) c -> b h w c", h=h_out, w=w_out)
     
     print(f"Extracted CLIP embeddings of shape {embeddings.shape}")

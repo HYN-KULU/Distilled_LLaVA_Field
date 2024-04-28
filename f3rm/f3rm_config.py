@@ -9,7 +9,8 @@ from nerfstudio.plugins.types import MethodSpecification
 
 from f3rm.feature_datamanager import FeatureDataManagerConfig
 from f3rm.model import FeatureFieldModelConfig
-
+import torch._dynamo
+torch._dynamo.config.suppress_errors = True
 f3rm_method = MethodSpecification(
     config=TrainerConfig(
         method_name="f3rm",

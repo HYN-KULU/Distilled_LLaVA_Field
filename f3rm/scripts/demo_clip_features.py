@@ -12,7 +12,7 @@ _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 _IMAGE_DIR = os.path.join(_MODULE_DIR, "images")
 
 # image_paths = [os.path.join(_IMAGE_DIR, name) for name in ["frame_1.png", "frame_2.png", "frame_3.png"]]
-image_paths = ["./datasets/f3rm/panda/scene_001/images/frame_00025.jpg","./datasets/f3rm/panda/scene_001/images/frame_00026.jpg","./datasets/f3rm/panda/scene_001/images/frame_00027.jpg"]
+image_paths = ["../../datasets/f3rm/panda/scene_001/images/frame_00025.jpg","../../datasets/f3rm/panda/scene_001/images/frame_00026.jpg","../../datasets/f3rm/panda/scene_001/images/frame_00027.jpg"]
 
 
 @torch.no_grad()
@@ -21,7 +21,7 @@ def demo_clip_features(text_query: str) -> None:
 
     # Extract the patch-level features for the images
     clip_embs = extract_clip_features(image_paths, device)
-    
+    print(clip_embs.shape)
     clip_embs /= clip_embs.norm(dim=-1, keepdim=True)
 
     # Load the CLIP model so we can get text embeddings

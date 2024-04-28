@@ -1,7 +1,10 @@
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Dict, List, Optional, Type
-
+from PIL import Image
+import torch
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn.functional as F
 from nerfstudio.cameras.rays import RayBundle, RaySamples
@@ -19,11 +22,15 @@ from nerfstudio.viewer.server.viewer_elements import (
     ViewerText,
 )
 from torch.nn import Parameter
-
+import re
 from f3rm.feature_field import FeatureField, FeatureFieldHeadNames
 from f3rm.pca_colormap import apply_pca_colormap_return_proj
 from f3rm.renderer import FeatureRenderer
-
+import json
+from f3rm.prompt import get_data_json, get_response,select_cluster_prompt
+import numpy as np
+from sklearn.cluster import DBSCAN
+from sklearn.preprocessing import StandardScaler
 
 @dataclass
 class FeatureFieldModelConfig(NerfactoModelConfig):
@@ -79,12 +86,14 @@ class ViewerUtils:
         # Embed text queries
         tokens = tokenize(texts).to(self.device)
         embed = self.clip.encode_text(tokens).float()
+        print("query shape: ",embed.shape)
         if is_positive:
             self.positives = texts
             # Average embedding if we have multiple positives
             embed = embed.mean(dim=0, keepdim=True)
             embed /= embed.norm(dim=-1, keepdim=True)
             self.pos_embed = embed
+            print("Weighted query shape: ",embed.shape)
         else:
             self.negatives = texts
             # We don't average the negatives as we compute pair-wise softmax
@@ -248,6 +257,129 @@ class FeatureFieldModel(NerfactoModel):
         return loss_dict
 
     @torch.no_grad()
+    def process_sims(self,viewer_utils:ViewerUtils,outputs,clip_features:torch.Tensor)->torch.Tensor:
+        target_object="wooden block"
+        reference_object="mug"
+        from f3rm.features.clip import tokenize
+        target_tokens = tokenize("wooden block").to(viewer_utils.device)
+        reference_tokens=tokenize("mug").to(viewer_utils.device)
+        target_embed = viewer_utils.clip.encode_text(target_tokens).float()
+        reference_embed=viewer_utils.clip.encode_text(reference_tokens).float()
+        target_sims=clip_features @ target_embed.T
+        reference_sims=clip_features@reference_embed.T
+        torch.save(reference_sims,"./f3rm/reference_sim.pth")
+        torch.save(target_sims,"./f3rm/target_sim.pth")
+        self.render_image_view(outputs['rgb'])
+        reference_cluster_centers=self.reference_cluster(reference_sims)
+        weighted_sims=self.target_cluster(target_sims,reference_cluster_centers)
+        return weighted_sims
+
+    def render_image_view(self,rgb_info):
+        image_tensor=rgb_info.clone().cpu()
+        image_tensor_scaled = image_tensor.float() * 255
+        flipped_image_tensor = torch.flip(image_tensor_scaled, [0])
+        flipped_image_array = flipped_image_tensor.numpy().astype(np.uint8)
+        fig, ax = plt.subplots()
+        ax.imshow(flipped_image_array)
+        ax.set_xlabel('Y-axis')
+        ax.set_ylabel('X-axis')
+        ax.set_xticks(np.arange(0, flipped_image_array.shape[1], 50))
+        ax.set_yticks(np.arange(flipped_image_array.shape[0], 0, -50))
+        ax.invert_yaxis()
+        ax.set_aspect('equal')
+        plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+        output_path = './f3rm/rendered_image.png'
+        plt.savefig(output_path, bbox_inches='tight', pad_inches=0)
+
+    def reference_cluster(self,reference_sims)->torch.Tensor:
+        # Compute threshold
+        reference_sims=reference_sims.cpu()
+        threshold = reference_sims.max() * 0.9
+
+        # Find indices of similarities above the threshold
+        indices_in_interest = torch.where(reference_sims > threshold)
+        coordinates_in_interest = np.column_stack((indices_in_interest[0].numpy(), indices_in_interest[1].numpy()))
+
+        # Scale the coordinates
+        scaler = StandardScaler()
+        scaled_coordinates = scaler.fit_transform(coordinates_in_interest)
+
+        # Use DBSCAN for clustering
+        dbscan = DBSCAN(eps=0.5, min_samples=5)  
+        cluster_labels = dbscan.fit_predict(scaled_coordinates)
+
+        # Calculate centers of coordinates for each cluster label
+        cluster_centers = []
+        for label in np.unique(cluster_labels):
+            if label == -1:
+                continue  # Skip noise points
+            cluster_center = np.mean(scaled_coordinates[cluster_labels == label], axis=0)
+            cluster_centers.append(cluster_center)
+
+        cluster_centers = scaler.inverse_transform(np.array(cluster_centers))
+        GPT_cluster_centers=[[292-round(x),round(y)] for [x,y] in cluster_centers]
+        print("GPT_reference_cluster: ",GPT_cluster_centers)
+        return GPT_cluster_centers
+
+    def target_cluster(self,target_sims,reference_cluster_centers)->torch.Tensor:
+        # Compute threshold
+        target_sims=target_sims.cpu()
+        threshold = target_sims.max() * 0.9
+
+        # Find indices of similarities above the threshold
+        indices_in_interest = torch.where(target_sims > threshold)
+        coordinates_in_interest = np.column_stack((indices_in_interest[0].numpy(), indices_in_interest[1].numpy()))
+
+        # Scale the coordinates
+        scaler = StandardScaler()
+        scaled_coordinates = scaler.fit_transform(coordinates_in_interest)
+
+        # Use DBSCAN for clustering
+        dbscan = DBSCAN(eps=0.5, min_samples=5)  
+        cluster_labels = dbscan.fit_predict(scaled_coordinates)
+
+        # Calculate centers of coordinates for each cluster label
+        cluster_centers = []
+        for label in np.unique(cluster_labels):
+            if label == -1:
+                continue  # Skip noise points
+            cluster_center = np.mean(scaled_coordinates[cluster_labels == label], axis=0)
+            cluster_centers.append(cluster_center)
+
+        cluster_centers = scaler.inverse_transform(np.array(cluster_centers))
+        x, y = np.meshgrid(np.arange(512), np.arange(292))
+        positions = np.stack([y, x], axis=-1)
+
+        # Calculate Euclidean distances to each cluster center
+        distances = np.sum(np.abs(positions[:, :, None, :] - cluster_centers[None, None, :, :])**2, axis=3)
+        d_list=[]
+        for i in range(distances.shape[2]):
+            d_list.append(distances[...,i])
+        if len(d_list)>1:
+            for i in range(distances.shape[2]):
+                d_list.append(distances[...,i])
+            GPT_cluster_centers=[[292-round(x),round(y)] for [x,y] in cluster_centers]
+            print("GPT_target_cluster: ",GPT_cluster_centers)
+            GPT_target_cluster_center_prompt=" ".join([f"{i}. {GPT_cluster_centers[i]}" for i in range(len(GPT_cluster_centers))])
+            GPT_reference_cluster_center_prompt=" ".join([f"{i}. {reference_cluster_centers[i]}" for i in range(len(reference_cluster_centers))])
+            prompt=select_cluster_prompt.format("Get the wooden block under the mug","wooden block","metal mug",GPT_target_cluster_center_prompt,GPT_reference_cluster_center_prompt)
+            payload = get_data_json(image_tensor=None, image_path="./f3rm/rendered_image.png",prompt=prompt, max_tokens=200)
+            response = get_response(payload)['choices'][0]['message']['content']
+            try:
+                selected_id=int(json.loads(response)['target_object_cluster'])
+            except:
+                match = re.search(r'"target_object_cluster":"(\d+)"', response)
+                selected_id = int(match.group(1))
+            weights = d_list[selected_id] / sum(d_list)
+            weights = np.nan_to_num(weights)
+            weights = weights[:, :, None]
+            weights=1-(weights-weights.min())/(weights.max()-weights.min())
+        else:
+            weights=1
+        weighted_sims = target_sims * weights
+        return weighted_sims.cuda()
+
+    @torch.no_grad()
     def get_outputs_for_camera_ray_bundle(self, camera_ray_bundle: RayBundle) -> Dict[str, torch.Tensor]:
         outputs = super().get_outputs_for_camera_ray_bundle(camera_ray_bundle)
 
@@ -266,11 +398,24 @@ class FeatureFieldModel(NerfactoModel):
 
         # If there are no negatives, just show the cosine similarity with the positives
         if not viewer_utils.has_negatives:
-            sims = clip_features @ viewer_utils.pos_embed.T
+            
+            # print("texts: ",viewer_utils.positives)
+            print("Calling Again")
+            # torch.save(outputs["rgb"],"rgb_info.pth")
+            
+            # sims = clip_features @ viewer_utils.pos_embed.T
+            # print("get_outputs_for_camera_ray_bundle Clip Features Shape: ",clip_features.shape)
+            # print("get_outputs_for_camera_ray_bundle Query Embedding Shape: ",viewer_utils.pos_embed.shape)
             # Show the mean similarity if there are multiple positives
-            if sims.shape[-1] > 1:
-                sims = sims.mean(dim=-1, keepdim=True)
-            outputs["similarity"] = sims
+            # if sims.shape[-1] > 1:
+            #     sims = sims.mean(dim=-1, keepdim=True)
+            # # print("get_outputs_for_camera_ray_bundle Similarity shape: ",sims.shape)
+            H,W,_=outputs['rgb'].shape
+            if H > 100:
+                sims=self.process_sims(viewer_utils,outputs,clip_features)
+                outputs["similarity"] = sims
+            else:
+                outputs["similarity"]=clip_features @ viewer_utils.pos_embed.T
             return outputs
 
         # Use paired softmax method as described in the paper with positive and negative texts
