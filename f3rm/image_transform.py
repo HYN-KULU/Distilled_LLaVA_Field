@@ -5,34 +5,32 @@ import numpy as np
 
 image_tensor=torch.load("./rgb_info.pth").cpu()
 image_tensor_scaled = image_tensor.float() * 255
-flipped_image_tensor = torch.flip(image_tensor_scaled, [0])
-
-# Convert the flipped tensor to a numpy array for plotting, ensuring it's in uint8 format.
-flipped_image_array = flipped_image_tensor.numpy().astype(np.uint8)
-
-# Create a new figure and axis for plotting the image.
+image_array_rgb = image_tensor_scaled .numpy().astype(np.uint8)
+image_array_symmetric = np.flip(image_array_rgb, axis=0)
 fig, ax = plt.subplots()
-
-# Plot the flipped image.
-ax.imshow(flipped_image_array)
-
-# Set the labels for the axes as per the user's description.
-ax.set_xlabel('Y-axis')
-ax.set_ylabel('X-axis')
-
-# Set the ticks such that x-axis numbers increase from top to bottom and y-axis numbers increase from left to right.
-# Since the image is flipped, the top of the image is now the bottom, so we reverse the y-ticks to match this.
-ax.set_xticks(np.arange(0, flipped_image_array.shape[1], 50))
-ax.set_yticks(np.arange(flipped_image_array.shape[0], 0, -50))
-
-# Ensure the origin is at the top left as per the user's instructions.
-# Invert the y-axis to make the x-axis go from 0 at the top to 250 at the bottom after flipping the image.
+ax.imshow(image_array_symmetric)
+ax.set_xlabel('X-axis')
+ax.set_ylabel('Y-axis')
 ax.invert_yaxis()
-
-# Set the aspect of the plot to equal, so the image isn't stretched.
+ax.set_xticks(np.arange(0, image_array_symmetric.shape[1], 50))
+ax.set_yticks(np.arange(0, image_array_symmetric.shape[0], 50))
 ax.set_aspect('equal')
+plt.subplots_adjust(left=0.05, right=0.95, top=1, bottom=0)
+plt.tight_layout()
 
-# Remove the padding around the image.
-plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
-output_path = './rendered_image.png'
-plt.savefig(output_path, bbox_inches='tight', pad_inches=0)
+fig.canvas.draw()
+
+# Convert the figure canvas to an array
+image_plot_array = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+image_plot_array = image_plot_array.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+
+# Instead of trying to set the writable flag, create a copy of the array directly when converting to a tensor
+image_plot_tensor = torch.tensor(image_plot_array.copy()) 
+image_np = image_plot_tensor.numpy()
+
+# Create a PIL image from the numpy array
+image_pil = Image.fromarray(image_np)
+
+image_pil.save("./converted_image.png")
+# output_path = './rendered_image.png'
+# plt.savefig(output_path, bbox_inches='tight', pad_inches=0)

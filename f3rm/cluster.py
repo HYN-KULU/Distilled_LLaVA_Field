@@ -51,6 +51,7 @@ if len(d_list)>1:
 else:
     weights=1
 weighted_sims = sims * weights
+print(weighted_sims.shape)
 plt.figure(figsize=(10, 5))
 plt.imshow(weighted_sims, cmap='coolwarm', interpolation='nearest')
 plt.colorbar()
